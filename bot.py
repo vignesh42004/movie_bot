@@ -3,7 +3,7 @@
 Movie Bot - Main Entry Point
 Run: python bot.py
 """
-import telebot
+
 import asyncio
 import logging
 import sys
@@ -73,4 +73,5 @@ if __name__ == "__main__":
 ╚════════════════════════════════╝
     """)
     asyncio.run(main())
+
     
