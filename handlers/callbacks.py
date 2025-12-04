@@ -7,7 +7,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 from database import db
-from helpers import check_subscription, get_short_link, encode_payload, get_movie_info
+from helpers import check_subscription, encode_payload
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,6 @@ def register_callback_handlers(app: Client):
             await query.answer("❌ Not found!", show_alert=True)
             return
         
-        # Check if multi-part
         if movie.get("parts", 1) > 1:
             buttons = []
             for i in range(1, movie["parts"] + 1):
@@ -40,7 +39,6 @@ def register_callback_handlers(app: Client):
                 parse_mode=ParseMode.MARKDOWN
             )
         else:
-            # Show quality selection
             await show_quality_buttons(query, movie, 1)
         
         await query.answer()
@@ -57,7 +55,6 @@ def register_callback_handlers(app: Client):
             await query.answer("❌ Not found!", show_alert=True)
             return
         
-        # Show quality selection for this part
         await show_quality_buttons(query, movie, part)
         await query.answer()
     
@@ -81,14 +78,10 @@ def register_callback_handlers(app: Client):
             await query.answer("❌ Not found!", show_alert=True)
             return
         
-        # Generate download link
+        # Create token and generate link
         token = await db.create_token(user_id, code, part, quality)
         payload = encode_payload(code, part, quality, token)
-        final_link = f"https://t.me/{bot.me.username}?start={payload}"
-        
-        await query.answer("🔄 Generating link...")
-        
-        short_link = await get_short_link(final_link)
+        bot_link = f"https://t.me/{bot.me.username}?start={payload}"
         
         # Get file size
         if part > 1 and "parts_data" in movie:
@@ -109,13 +102,15 @@ def register_callback_handlers(app: Client):
             f"✅ **{movie['title']}**\n\n"
             f"📦 Part: {part}\n"
             f"🎞️ Quality: {quality}{size_text}\n\n"
-            f"👇 Click to download:",
+            f"👇 Click to get file:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔓 Download", url=short_link)],
+                [InlineKeyboardButton("📥 Get File", url=bot_link)],
                 [back_btn]
             ]),
             parse_mode=ParseMode.MARKDOWN
         )
+        
+        await query.answer("✅ Link generated!")
     
     
     # ============ BACK TO QUALITY SELECTION ============
@@ -159,7 +154,6 @@ async def show_quality_buttons(query: CallbackQuery, movie: dict, part: int):
             InlineKeyboardButton(btn_text, callback_data=f"quality:{movie['code']}:{part}:{quality}")
         ])
     
-    # Add back button if multi-part
     if movie.get("parts", 1) > 1:
         buttons.append([InlineKeyboardButton("◀️ Back to Parts", callback_data=f"movie:{movie['code']}")])
     
