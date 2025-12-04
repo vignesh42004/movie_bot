@@ -7,25 +7,6 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
-async def get_short_link(url: str) -> str:
-    """Shorten URL with GP Links"""
-    if not Config.GPLINKS_API_KEY:
-        return url
-    
-    try:
-        api = f"{Config.GPLINKS_API_URL}?api={Config.GPLINKS_API_KEY}&url={url}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("status") == "success":
-                        return data.get("shortenedUrl", url)
-        return url
-    except Exception as e:
-        logger.error(f"Shortener error: {e}")
-        return url
-
-
 async def get_movie_info(query: str) -> dict:
     """Get movie info from TMDB"""
     if not Config.TMDB_API_KEY or not query:
@@ -76,7 +57,7 @@ async def check_subscription(bot, user_id: int) -> bool:
 
 
 def encode_payload(movie_code: str, part: int = 1, quality: str = "", token: str = "") -> str:
-    """Encode data to base64 - Now includes quality"""
+    """Encode data to base64"""
     try:
         data = f"{movie_code}|{part}|{quality}|{token}"
         return base64.urlsafe_b64encode(data.encode()).decode()
@@ -85,7 +66,7 @@ def encode_payload(movie_code: str, part: int = 1, quality: str = "", token: str
 
 
 def decode_payload(payload: str) -> tuple:
-    """Decode base64 to data - Now returns quality too"""
+    """Decode base64 to data"""
     try:
         if not payload:
             return "", 1, "", ""
@@ -107,11 +88,8 @@ def decode_payload(payload: str) -> tuple:
 
 
 def normalize_name(text: str) -> str:
-    """Normalize movie name - keeps original spacing"""
-    # Remove special characters but keep spaces
+    """Normalize movie name"""
     text = re.sub(r'[^\w\s]', '', text)
-    # Convert to lowercase
     text = text.lower().strip()
-    # Replace multiple spaces with single space
     text = re.sub(r'\s+', ' ', text)
     return text
