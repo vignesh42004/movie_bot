@@ -20,10 +20,6 @@ class Config:
     MONGO_DB_URL = os.environ.get("MONGO_DB_URL", "")
     DB_NAME = os.environ.get("DB_NAME", "MovieBot")
     
-    # GP Links
-    GPLINKS_API_KEY = os.environ.get("GPLINKS_API_KEY", "")
-    GPLINKS_API_URL = "https://gplinks.com/api"
-    
     # TMDB
     TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
     
