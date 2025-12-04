@@ -2,15 +2,16 @@ if __name__ == "__main__":
     exit("Run bot.py instead!")
 
 import logging
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
 from config import Config
 from database import db
 from helpers import (
     check_subscription,
     get_movie_info,
-    get_short_link,
     encode_payload,
     decode_payload,
     normalize_name
@@ -18,6 +19,33 @@ from helpers import (
 from utils.monetize import create_download_link, is_monetization_enabled
 
 logger = logging.getLogger(__name__)
+
+
+# ============ SAFE REPLY HELPER ============
+async def safe_reply(message: Message, text: str, **kwargs):
+    """Send reply with FloodWait handling"""
+    try:
+        return await message.reply_text(text, **kwargs)
+    except FloodWait as e:
+        logger.warning(f"FloodWait: sleeping {e.value} seconds")
+        await asyncio.sleep(e.value)
+        return await message.reply_text(text, **kwargs)
+    except Exception as e:
+        logger.error(f"Reply error: {e}")
+        return None
+
+
+async def safe_edit(message: Message, text: str, **kwargs):
+    """Edit message with FloodWait handling"""
+    try:
+        return await message.edit_text(text, **kwargs)
+    except FloodWait as e:
+        logger.warning(f"FloodWait: sleeping {e.value} seconds")
+        await asyncio.sleep(e.value)
+        return await message.edit_text(text, **kwargs)
+    except Exception as e:
+        logger.error(f"Edit error: {e}")
+        return None
 
 
 def register_user_handlers(app: Client):
@@ -35,7 +63,6 @@ def register_user_handlers(app: Client):
         
         parts = text.split(maxsplit=1)
         
-        # No payload - welcome
         if len(parts) == 1:
             await send_welcome(message)
             return
@@ -46,14 +73,12 @@ def register_user_handlers(app: Client):
             await send_welcome(message)
             return
         
-        # Block controller payloads
         blocked = ["connect", "controller", "setup", "config", "admin", "panel", "settings"]
         if any(b in payload.lower() for b in blocked):
             if user_id != Config.ADMIN_ID:
                 await send_welcome(message)
                 return
         
-        # Decode payload
         movie_code, part, quality, token = decode_payload(payload)
         
         logger.info(f"Decoded: code={movie_code}, part={part}, quality={quality}, token={token[:10] if token else 'None'}...")
@@ -62,9 +87,9 @@ def register_user_handlers(app: Client):
             await send_welcome(message)
             return
         
-        # Check subscription
         if not await check_subscription(bot, user_id):
-            await message.reply_text(
+            await safe_reply(
+                message,
                 "🔒 **Join to Continue**\n\n"
                 "You must join our channel first.",
                 reply_markup=InlineKeyboardMarkup([
@@ -75,7 +100,6 @@ def register_user_handlers(app: Client):
             )
             return
         
-        # Has token - send file
         if token:
             token_data = await db.verify_token(token, user_id)
             
@@ -86,12 +110,10 @@ def register_user_handlers(app: Client):
                     t_part = token_data.get("part", 1)
                     t_quality = token_data.get("quality", "")
                     
-                    # Get file_id based on part and quality
                     file_id = None
                     file_size = ""
                     
                     if t_part > 1 and "parts_data" in movie:
-                        # Multi-part movie
                         part_key = f"part_{t_part}"
                         if part_key in movie["parts_data"]:
                             qualities = movie["parts_data"][part_key].get("qualities", {})
@@ -99,65 +121,39 @@ def register_user_handlers(app: Client):
                                 file_id = qualities[t_quality].get("file_id")
                                 file_size = qualities[t_quality].get("size", "")
                     else:
-                        # Single part movie
                         qualities = movie.get("qualities", {})
                         if t_quality in qualities:
                             file_id = qualities[t_quality].get("file_id")
                             file_size = qualities[t_quality].get("size", "")
                     
                     if file_id:
-                        # ========== MONETIZATION LOGIC ==========
-                        if is_monetization_enabled():
-                            # Send through ad page
-                            await send_monetized_file(
-                                bot, message, movie, file_id, 
-                                t_part, t_quality, file_size
-                            )
-                        else:
-                            # Send directly (old behavior)
-                            try:
-                                await bot.send_cached_media(
-                                    chat_id=user_id,
-                                    file_id=file_id,
-                                    caption=(
-                                        f"🎬 **{movie['title']}**\n\n"
-                                        f"📦 Part: {t_part}\n"
-                                        f"🎞️ Quality: {t_quality}\n\n"
-                                        f"✅ Enjoy!"
-                                    ),
-                                    parse_mode=ParseMode.MARKDOWN
-                                )
-                            except:
-                                await message.reply_document(
-                                    file_id,
-                                    caption=f"🎬 **{movie['title']}** ({t_quality})",
-                                    parse_mode=ParseMode.MARKDOWN
-                                )
+                        await send_file_with_ads(
+                            bot, message, movie, file_id,
+                            t_part, t_quality, file_size
+                        )
                         return
                 
-                await message.reply_text("❌ File not available. Try searching again.")
+                await safe_reply(message, "❌ File not available. Try searching again.")
                 return
             
-            await message.reply_text("⏰ Link expired! Please search again.")
+            await safe_reply(message, "⏰ Link expired! Please search again.")
             return
         
-        # No token - show movie
         movie = await db.get_movie(movie_code)
         
         if not movie:
             await send_welcome(message)
             return
         
-        # Check if multi-part
         if movie.get("parts", 1) > 1:
-            # Show part selection
             buttons = []
             for i in range(1, movie["parts"] + 1):
                 buttons.append(InlineKeyboardButton(f"📦 Part {i}", callback_data=f"part:{movie_code}:{i}"))
             
             keyboard = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
             
-            await message.reply_text(
+            await safe_reply(
+                message,
                 f"🎬 **{movie['title']}**\n\n"
                 f"This movie has {movie['parts']} parts.\n"
                 f"Select one:",
@@ -166,19 +162,16 @@ def register_user_handlers(app: Client):
             )
             return
         
-        # Single part - show quality selection
         qualities = movie.get("qualities", {})
         
         if not qualities:
-            await message.reply_text("❌ No files available for this movie.")
+            await safe_reply(message, "❌ No files available for this movie.")
             return
         
         if len(qualities) == 1:
-            # Only one quality - generate link directly
             quality = list(qualities.keys())[0]
             await generate_download_link(bot, message, movie, 1, quality)
         else:
-            # Multiple qualities - show selection
             await show_quality_selection(message, movie, 1)
     
     
@@ -210,7 +203,7 @@ def register_user_handlers(app: Client):
                 "`/broadcast` - Send to all"
             )
         
-        await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await safe_reply(message, text, parse_mode=ParseMode.MARKDOWN)
     
     
     # ============ SEARCH (any text) ============
@@ -227,7 +220,7 @@ def register_user_handlers(app: Client):
         query = normalize_name(text)
         
         if len(query) < 2:
-            await message.reply_text("❌ Enter at least 2 characters!")
+            await safe_reply(message, "❌ Enter at least 2 characters!")
             return
         
         movies = await db.search_movies(query)
@@ -235,7 +228,8 @@ def register_user_handlers(app: Client):
         if not movies:
             info = await get_movie_info(text)
             if info:
-                await message.reply_text(
+                await safe_reply(
+                    message,
                     f"❌ **Not in database**\n\n"
                     f"Found on TMDB:\n"
                     f"🎬 {info['title']} ({info.get('year', '')})\n"
@@ -244,21 +238,16 @@ def register_user_handlers(app: Client):
                     parse_mode=ParseMode.MARKDOWN
                 )
             else:
-                await message.reply_text("❌ Movie not found! Check spelling.")
+                await safe_reply(message, "❌ Movie not found! Check spelling.")
             return
         
-        # Single result
         if len(movies) == 1:
             await send_movie_card(bot, message, movies[0])
             return
         
-        # Multiple results
         buttons = []
         for m in movies[:10]:
             parts_text = f" ({m.get('parts', 1)} parts)" if m.get('parts', 1) > 1 else ""
-            qualities = m.get("qualities", {})
-            q_text = f" [{', '.join(qualities.keys())}]" if qualities else ""
-            
             buttons.append([
                 InlineKeyboardButton(
                     f"🎬 {m['title']}{parts_text}",
@@ -266,7 +255,8 @@ def register_user_handlers(app: Client):
                 )
             ])
         
-        await message.reply_text(
+        await safe_reply(
+            message,
             f"🔍 Found {len(movies)} results:",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode=ParseMode.MARKDOWN
@@ -276,7 +266,8 @@ def register_user_handlers(app: Client):
 # ============ HELPER FUNCTIONS ============
 
 async def send_welcome(message: Message):
-    await message.reply_text(
+    await safe_reply(
+        message,
         "🎬 **Welcome to Movie Bot!**\n\n"
         "Send me any movie name to search.\n\n"
         "**Examples:**\n"
@@ -322,15 +313,15 @@ async def send_movie_card(bot: Client, message: Message, movie: dict):
         try:
             await message.reply_photo(info["poster"], caption=caption, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
             return
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
         except:
             pass
     
-    await message.reply_text(caption, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+    await safe_reply(message, caption, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
 
 
 async def show_quality_selection(message: Message, movie: dict, part: int = 1):
-    """Show available qualities for selection"""
-    
     if part > 1 and "parts_data" in movie:
         part_key = f"part_{part}"
         qualities = movie["parts_data"].get(part_key, {}).get("qualities", {})
@@ -338,7 +329,7 @@ async def show_quality_selection(message: Message, movie: dict, part: int = 1):
         qualities = movie.get("qualities", {})
     
     if not qualities:
-        await message.reply_text("❌ No qualities available!")
+        await safe_reply(message, "❌ No qualities available!")
         return
     
     buttons = []
@@ -349,7 +340,8 @@ async def show_quality_selection(message: Message, movie: dict, part: int = 1):
             InlineKeyboardButton(btn_text, callback_data=f"quality:{movie['code']}:{part}:{quality}")
         ])
     
-    await message.reply_text(
+    await safe_reply(
+        message,
         f"🎬 **{movie['title']}**\n\n"
         f"📦 Part: {part}\n\n"
         f"Select quality:",
@@ -359,18 +351,12 @@ async def show_quality_selection(message: Message, movie: dict, part: int = 1):
 
 
 async def generate_download_link(bot: Client, message: Message, movie: dict, part: int, quality: str):
-    """Generate short link for download"""
     user_id = message.from_user.id
     
     token = await db.create_token(user_id, movie["code"], part, quality)
     payload = encode_payload(movie["code"], part, quality, token)
-    final_link = f"https://t.me/{bot.me.username}?start={payload}"
+    bot_link = f"https://t.me/{bot.me.username}?start={payload}"
     
-    status = await message.reply_text("🔄 Generating link...")
-    
-    short_link = await get_short_link(final_link)
-    
-    # Get file size
     if part > 1 and "parts_data" in movie:
         part_key = f"part_{part}"
         size = movie["parts_data"].get(part_key, {}).get("qualities", {}).get(quality, {}).get("size", "")
@@ -379,47 +365,41 @@ async def generate_download_link(bot: Client, message: Message, movie: dict, par
     
     size_text = f"\n📁 Size: {size}" if size else ""
     
-    await status.edit_text(
+    await safe_reply(
+        message,
         f"✅ **{movie['title']}**\n\n"
         f"📦 Part: {part}\n"
         f"🎞️ Quality: {quality}{size_text}\n\n"
-        f"👇 Click to download:",
+        f"👇 Click to get file:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 Download", url=short_link)]
+            [InlineKeyboardButton("📥 Get File", url=bot_link)]
         ]),
         parse_mode=ParseMode.MARKDOWN
     )
 
 
-# ========== NEW: MONETIZED FILE SENDING ==========
-
-async def send_monetized_file(
-    bot: Client, 
-    message: Message, 
-    movie: dict, 
-    file_id: str, 
-    part: int, 
-    quality: str, 
+async def send_file_with_ads(
+    bot: Client,
+    message: Message,
+    movie: dict,
+    file_id: str,
+    part: int,
+    quality: str,
     file_size: str
 ):
-    """
-    Send file through GitHub ad page for monetization
-    """
     user_id = message.from_user.id
     
-    status = await message.reply_text("🔄 Preparing download...")
+    status = await safe_reply(message, "🔄 Generating download link...")
+    
+    if not status:
+        return
     
     try:
-        # Get file from Telegram to get the direct URL
         file = await bot.get_file(file_id)
-        
-        # Construct the direct Telegram file URL
         file_url = f"https://api.telegram.org/file/bot{Config.BOT_TOKEN}/{file.file_path}"
         
-        # Create file name
         file_name = f"{movie['title']} - Part {part} ({quality}).mp4"
         
-        # Create monetized link
         download_link = create_download_link(
             file_url=file_url,
             file_name=file_name,
@@ -427,26 +407,29 @@ async def send_monetized_file(
             quality=quality
         )
         
-        # Send the monetized link
-        await status.edit_text(
+        await safe_edit(
+            status,
             f"✅ **{movie['title']}**\n\n"
             f"📦 Part: {part}\n"
             f"🎞️ Quality: {quality}\n"
             f"📁 Size: {file_size}\n\n"
-            f"👇 **Click to Download:**",
+            f"👇 **Click to Download:**\n\n"
+            f"⚠️ _Link expires in 1 hour_",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬇️ Download Movie", url=download_link)],
-                [InlineKeyboardButton("🔄 Get New Link", callback_data=f"quality:{movie['code']}:{part}:{quality}")]
+                [InlineKeyboardButton("⬇️ Download Movie", url=download_link)]
             ]),
             parse_mode=ParseMode.MARKDOWN
         )
         
     except Exception as e:
-        logger.error(f"Monetized file error: {e}")
+        logger.error(f"Ad page error: {e}")
         
-        # Fallback: send file directly
         try:
             await status.delete()
+        except:
+            pass
+        
+        try:
             await bot.send_cached_media(
                 chat_id=user_id,
                 file_id=file_id,
@@ -458,6 +441,8 @@ async def send_monetized_file(
                 ),
                 parse_mode=ParseMode.MARKDOWN
             )
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
         except:
             await message.reply_document(
                 file_id,
