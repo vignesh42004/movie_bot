@@ -8,7 +8,7 @@ import urllib.parse
 # ======================
 
 # Your GitHub Pages URL (change this!)
-GITHUB_PAGE_URL = "https://vignesh42004.github.io/adspage/"
+GITHUB_PAGE_URL = "https://vignesh42004.github.io/adspage"
 
 # Enable/Disable monetization (set False to send files directly)
 MONETIZATION_ENABLED = True
@@ -42,4 +42,5 @@ def create_download_link(
 
 def is_monetization_enabled() -> bool:
     """Check if monetization is enabled"""
+
     return MONETIZATION_ENABLED and GITHUB_PAGE_URL and "YOUR_GITHUB_USERNAME" not in GITHUB_PAGE_URL
