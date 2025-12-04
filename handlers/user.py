@@ -15,6 +15,7 @@ from helpers import (
     decode_payload,
     normalize_name
 )
+from utils.monetize import create_download_link, is_monetization_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def register_user_handlers(app: Client):
                     
                     # Get file_id based on part and quality
                     file_id = None
+                    file_size = ""
                     
                     if t_part > 1 and "parts_data" in movie:
                         # Multi-part movie
@@ -95,31 +97,42 @@ def register_user_handlers(app: Client):
                             qualities = movie["parts_data"][part_key].get("qualities", {})
                             if t_quality in qualities:
                                 file_id = qualities[t_quality].get("file_id")
+                                file_size = qualities[t_quality].get("size", "")
                     else:
                         # Single part movie
                         qualities = movie.get("qualities", {})
                         if t_quality in qualities:
                             file_id = qualities[t_quality].get("file_id")
+                            file_size = qualities[t_quality].get("size", "")
                     
                     if file_id:
-                        try:
-                            await bot.send_cached_media(
-                                chat_id=user_id,
-                                file_id=file_id,
-                                caption=(
-                                    f"🎬 **{movie['title']}**\n\n"
-                                    f"📦 Part: {t_part}\n"
-                                    f"🎞️ Quality: {t_quality}\n\n"
-                                    f"✅ Enjoy!"
-                                ),
-                                parse_mode=ParseMode.MARKDOWN
+                        # ========== MONETIZATION LOGIC ==========
+                        if is_monetization_enabled():
+                            # Send through ad page
+                            await send_monetized_file(
+                                bot, message, movie, file_id, 
+                                t_part, t_quality, file_size
                             )
-                        except:
-                            await message.reply_document(
-                                file_id,
-                                caption=f"🎬 **{movie['title']}** ({t_quality})",
-                                parse_mode=ParseMode.MARKDOWN
-                            )
+                        else:
+                            # Send directly (old behavior)
+                            try:
+                                await bot.send_cached_media(
+                                    chat_id=user_id,
+                                    file_id=file_id,
+                                    caption=(
+                                        f"🎬 **{movie['title']}**\n\n"
+                                        f"📦 Part: {t_part}\n"
+                                        f"🎞️ Quality: {t_quality}\n\n"
+                                        f"✅ Enjoy!"
+                                    ),
+                                    parse_mode=ParseMode.MARKDOWN
+                                )
+                            except:
+                                await message.reply_document(
+                                    file_id,
+                                    caption=f"🎬 **{movie['title']}** ({t_quality})",
+                                    parse_mode=ParseMode.MARKDOWN
+                                )
                         return
                 
                 await message.reply_text("❌ File not available. Try searching again.")
@@ -376,3 +389,78 @@ async def generate_download_link(bot: Client, message: Message, movie: dict, par
         ]),
         parse_mode=ParseMode.MARKDOWN
     )
+
+
+# ========== NEW: MONETIZED FILE SENDING ==========
+
+async def send_monetized_file(
+    bot: Client, 
+    message: Message, 
+    movie: dict, 
+    file_id: str, 
+    part: int, 
+    quality: str, 
+    file_size: str
+):
+    """
+    Send file through GitHub ad page for monetization
+    """
+    user_id = message.from_user.id
+    
+    status = await message.reply_text("🔄 Preparing download...")
+    
+    try:
+        # Get file from Telegram to get the direct URL
+        file = await bot.get_file(file_id)
+        
+        # Construct the direct Telegram file URL
+        file_url = f"https://api.telegram.org/file/bot{Config.BOT_TOKEN}/{file.file_path}"
+        
+        # Create file name
+        file_name = f"{movie['title']} - Part {part} ({quality}).mp4"
+        
+        # Create monetized link
+        download_link = create_download_link(
+            file_url=file_url,
+            file_name=file_name,
+            file_size=file_size,
+            quality=quality
+        )
+        
+        # Send the monetized link
+        await status.edit_text(
+            f"✅ **{movie['title']}**\n\n"
+            f"📦 Part: {part}\n"
+            f"🎞️ Quality: {quality}\n"
+            f"📁 Size: {file_size}\n\n"
+            f"👇 **Click to Download:**",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬇️ Download Movie", url=download_link)],
+                [InlineKeyboardButton("🔄 Get New Link", callback_data=f"quality:{movie['code']}:{part}:{quality}")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"Monetized file error: {e}")
+        
+        # Fallback: send file directly
+        try:
+            await status.delete()
+            await bot.send_cached_media(
+                chat_id=user_id,
+                file_id=file_id,
+                caption=(
+                    f"🎬 **{movie['title']}**\n\n"
+                    f"📦 Part: {part}\n"
+                    f"🎞️ Quality: {quality}\n\n"
+                    f"✅ Enjoy!"
+                ),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except:
+            await message.reply_document(
+                file_id,
+                caption=f"🎬 **{movie['title']}** ({quality})",
+                parse_mode=ParseMode.MARKDOWN
+            )
